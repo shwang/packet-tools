@@ -11,13 +11,13 @@ import (
 )
 
 func main() {
-	inHandle, err := pcap.OpenLive("en0", 1024, false, 30*time.Second)
+	inHandle, err := pcap.OpenOffline("/udp-test.pcap")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer inHandle.Close()
 
-	outHandle, err := pcap.OpenLive("en1", 1024, false, 30*time.Second)
+	outHandle, err := pcap.OpenLive("eth0", 1024, false, 30*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -28,16 +28,18 @@ func main() {
 	pktSrc := gopacket.NewPacketSource(inHandle, inHandle.LinkType())
 	for pkt := range pktSrc.Packets() {
 		modPkt, err := modifyPacket(pkt)
+		fmt.Println("original")
 		fmt.Println(pkt)
 		fmt.Println()
+		fmt.Println("modified")
 		fmt.Println(modPkt)
+
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 		fmt.Println()
 		outHandle.WritePacketData(modPkt.Data())
-		//outHandle.WritePacketData(pkt.Data())
 
 		count++
 		if count >= 10 {
@@ -46,21 +48,9 @@ func main() {
 	}
 }
 
-func listAll() {
-	devices, err := pcap.FindAllDevs()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, dev := range devices {
-		fmt.Println(dev)
-	}
-}
-
-// Return a tunneled GRE(TODO: -NSH) variant of the packet. The tunnel IP will be the same
+// Return a tunneled GRE variant of the packet. The tunnel IP will be the same
 // as the original IP. The ethernet address will remain unchanged.
 func modifyPacket(pkt gopacket.Packet) (gopacket.Packet, error) {
-	fmt.Println("modPacket")
 	link, ok := pkt.LinkLayer().(gopacket.SerializableLayer)
 	if !ok {
 		return nil, fmt.Errorf("Link layer is not serialiable %q\n", link)
@@ -71,7 +61,7 @@ func modifyPacket(pkt gopacket.Packet) (gopacket.Packet, error) {
 		return nil, fmt.Errorf("Network layer is not serializable %q\n", network)
 	}
 
-	transport, ok := pkt.NetworkLayer().(gopacket.SerializableLayer)
+	transport, ok := pkt.TransportLayer().(gopacket.SerializableLayer)
 	if !ok {
 		return nil, fmt.Errorf(
 			"Transport layer is not serializable %q\n", transport)
@@ -83,33 +73,24 @@ func modifyPacket(pkt gopacket.Packet) (gopacket.Packet, error) {
 			"Application layer is not serializable %q\n", application)
 	}
 
-	//opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	opts := gopacket.SerializeOptions{}
-	buf := gopacket.NewSerializeBuffer()
+	ipExpectGRE := *(pkt.NetworkLayer().(*layers.IPv4)) // Create a copy of the original IP layer
+	ipExpectGRE.Protocol = layers.IPProtocolGRE
 
-	gopacket.SerializeLayers(buf, opts,
-		link,
-		network,
+	gre := &layers.GRE{Protocol: layers.EthernetTypeIPv4}
+
+	decodableNetwork, ok := pkt.NetworkLayer().(gopacket.DecodingLayer)
+	fmt.Println("gre next layer", gre.NextLayerType(), "\n", "network next layer", decodableNetwork.NextLayerType())
+
+	buf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums:true},
 		transport,
 		application)
 
-	// gre := layers.GRE{Protocol: layers.EthernetTypeIPv4}
-	// greBytes := gre.LayerContents()
-
-	// bufPre, err := buf.PrependBytes(len(greBytes))
-	// if err != nil {
-	// 	return nil, fmt.Errorf("Could not prepend greBytes: %s\n", bufPre)
-	// }
-	// if copy(bufPre, greBytes) != len(greBytes) {
-	// 	return nil, fmt.Errorf("Unexpected copy length\n")
-	// }
-
-	// if err := network.SerializeTo(buf, opts); err != nil {
-	// 	return nil, fmt.Errorf("Failed to serialize network layer: %s", err.Error())
-	// }
-	// if err := link.SerializeTo(buf, opts); err != nil {
-	// 	return nil, fmt.Errorf("Failed to serialize link layer: %s", err.Error())
-	// }
+	fullOpts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	network.SerializeTo(buf, fullOpts)
+	gre.SerializeTo(buf, fullOpts)
+	ipExpectGRE.SerializeTo(buf, fullOpts)
+	link.SerializeTo(buf, fullOpts)
 
 	return gopacket.NewPacket(buf.Bytes(),
 		layers.LayerTypeEthernet, gopacket.Default), nil
