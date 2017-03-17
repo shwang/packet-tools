@@ -122,6 +122,8 @@ func (nsh *NSH) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	for i := 0; i < 4; i++ {
 		nsh.Context[i] = NSHContextHeader(binary.BigEndian.Uint32(data[8+4*i:]))
 	}
+
+	nsh.BaseLayer = layers.BaseLayer{data[nsh.Length*4:], data[nsh.Length*4:]}
 	return nil
 }
 
