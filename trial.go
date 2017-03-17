@@ -8,6 +8,8 @@ import (
 	"github.com/google/gopacket"
 	layers "github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+
+	"github.com/sirspinach/packet-tools/nsh"
 )
 
 func main() {
@@ -76,7 +78,17 @@ func modifyPacket(pkt gopacket.Packet) (gopacket.Packet, error) {
 	ipExpectGRE := *(pkt.NetworkLayer().(*layers.IPv4)) // Create a copy of the original IP layer
 	ipExpectGRE.Protocol = layers.IPProtocolGRE
 
-	gre := &layers.GRE{Protocol: layers.EthernetTypeIPv4}
+	gre := &layers.GRE{Protocol: nsh.EthernetTypeNSH}
+	nshLayer := nsh.NSH{
+		Version: 0,
+		Length: 6,
+		Protocol: nsh.NSHProtocolIPv4,
+		MDType: nsh.MDTypeOne,
+
+		ServicePathIdentifier: 777,
+		ServiceIndex: 7,
+		Context: [4]nsh.NSHContextHeader{1,2,3,4},
+	}
 
 	decodableNetwork, ok := pkt.NetworkLayer().(gopacket.DecodingLayer)
 	fmt.Println("gre next layer", gre.NextLayerType(), "\n", "network next layer", decodableNetwork.NextLayerType())
@@ -88,6 +100,7 @@ func modifyPacket(pkt gopacket.Packet) (gopacket.Packet, error) {
 
 	fullOpts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 	network.SerializeTo(buf, fullOpts)
+	nshLayer.SerializeTo(buf, fullOpts)
 	gre.SerializeTo(buf, fullOpts)
 	ipExpectGRE.SerializeTo(buf, fullOpts)
 	link.SerializeTo(buf, fullOpts)
