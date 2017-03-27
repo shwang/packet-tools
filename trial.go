@@ -30,7 +30,7 @@ func main() {
 
 	pktSrc := gopacket.NewPacketSource(inHandle, inHandle.LinkType())
 	for pkt := range pktSrc.Packets() {
-		modPkt, err := modifyPacketBareNSH(pkt)
+		modPkt, err := modifyPacketVXLAN_GPE(pkt)
 		fmt.Println("original")
 		fmt.Println(pkt)
 		fmt.Println()
@@ -139,27 +139,29 @@ func modifyPacketBareNSH(pkt gopacket.Packet) (gopacket.Packet, error) {
 
 	etherExpectNSH := *(link.(*layers.Ethernet)) // Create a copy of the original IP layer
 	etherExpectNSH.EthernetType = nsh.EthernetTypeNSH
+	ipModifiedDest := *(pkt.NetworkLayer().(*layers.IPv4))
+	ipModifiedDest.DstIP = net.IPv4(10, 13, 13, 13)
 
 	nshLayer := nsh.NSH{
-		Version:  0,
-		Length:   6,
+		Version: 0,
+		Length: 6,
 		Protocol: nsh.NSHProtocolIPv4,
-		MDType:   nsh.MDTypeOne,
+		MDType: nsh.MDTypeOne,
 
 		ServicePathIdentifier: 777,
-		ServiceIndex:          7,
-		Context:               [4]nsh.NSHContextHeader{1, 2, 3, 4},
+		ServiceIndex: 7,
+		Context: [4]nsh.NSHContextHeader{1,2,3,4},
 	}
 
 	fmt.Println("link next layer", etherExpectNSH.NextLayerType())
 
 	buf := gopacket.NewSerializeBuffer()
-	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
+	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums:true},
 		transport,
 		application)
 
 	fullOpts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	network.SerializeTo(buf, fullOpts)
+	ipModifiedDest.SerializeTo(buf, fullOpts)
 	nshLayer.SerializeTo(buf, fullOpts)
 	etherExpectNSH.SerializeTo(buf, fullOpts)
 
@@ -194,25 +196,152 @@ func modifyPacketVLAN(pkt gopacket.Packet) (gopacket.Packet, error) {
 	linkExpectVLAN := *(link.(*layers.Ethernet))
 	linkExpectVLAN.EthernetType = layers.EthernetTypeDot1Q
 
-	vlan := layers.Dot1Q{
-		Priority:       10,
+	vlan := layers.Dot1Q {
+		Priority: 10,
 		VLANIdentifier: 13,
-		Type:           layers.EthernetTypeIPv4,
+		Type: layers.EthernetTypeIPv4,
 	}
 
 	//ipModifiedDest := *(pkt.NetworkLayer().(*layers.IPv4))
 	//ipModifiedDest.DstIP = net.IPv4(10, 13, 13, 13)
 
 	buf := gopacket.NewSerializeBuffer()
-	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
+	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums:true},
 		transport,
 		application)
 
 	fullOpts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	//ipModifiedDest.SerializeTo(buf, fullOpts)
 	network.SerializeTo(buf, fullOpts)
 	vlan.SerializeTo(buf, fullOpts)
 	linkExpectVLAN.SerializeTo(buf, fullOpts)
+
+	return gopacket.NewPacket(buf.Bytes(),
+		layers.LayerTypeEthernet, gopacket.Default), nil
+
+}
+
+// Create a VXLAN variant of this packet
+func modifyPacketVXLAN(pkt gopacket.Packet) (gopacket.Packet, error) {
+	link, ok := pkt.LinkLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf("Link layer is not serialiable %q\n", link)
+	}
+
+	network, ok := pkt.NetworkLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf("Network layer is not serializable %q\n", network)
+	}
+
+	transport, ok := pkt.TransportLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"Transport layer is not serializable %q\n", transport)
+	}
+
+	application, ok := pkt.ApplicationLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"Application layer is not serializable %q\n", application)
+	}
+
+	ipModifiedDest := *(pkt.NetworkLayer().(*layers.IPv4))
+	ipModifiedDest.DstIP = net.IPv4(10, 13, 13, 13)
+
+	vxlan := layers.VXLAN {
+		ValidIDFlag: true,
+		VNI: 777,
+	}
+
+	ipExpectUDP := *(pkt.NetworkLayer().(*layers.IPv4))
+	ipExpectUDP.Protocol = layers.IPProtocolUDP
+
+	outerUDP := layers.UDP{
+		SrcPort: 777,
+		DstPort: 4789,
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums:true},
+		transport,
+		application)
+
+	fullOpts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	ipModifiedDest.SerializeTo(buf, fullOpts)
+	link.SerializeTo(buf, fullOpts)
+	vxlan.SerializeTo(buf, fullOpts)
+	outerUDP.SerializeTo(buf, fullOpts)
+	ipExpectUDP.SerializeTo(buf, fullOpts)
+	link.SerializeTo(buf, fullOpts)
+
+	return gopacket.NewPacket(buf.Bytes(),
+		layers.LayerTypeEthernet, gopacket.Default), nil
+}
+
+// Create an NSH over VXLAN-GPE variant of this packet
+func modifyPacketVXLAN_GPE(pkt gopacket.Packet) (gopacket.Packet, error) {
+	link, ok := pkt.LinkLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf("Link layer is not serialiable %q\n", link)
+	}
+
+	network, ok := pkt.NetworkLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf("Network layer is not serializable %q\n", network)
+	}
+
+	transport, ok := pkt.TransportLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"Transport layer is not serializable %q\n", transport)
+	}
+
+	application, ok := pkt.ApplicationLayer().(gopacket.SerializableLayer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"Application layer is not serializable %q\n", application)
+	}
+
+	ipModifiedDest := *(pkt.NetworkLayer().(*layers.IPv4))
+	ipModifiedDest.DstIP = net.IPv4(10, 13, 13, 13)
+
+	vxlan := layers.VXLAN {
+		ValidIDFlag: true,
+		VNI: 777,
+		GPEHasNextProtocol: true,
+		GPENextProtocol: layers.VxlanGPEProtocolNSH,
+	}
+
+	nshLayer := nsh.NSH{
+		Version: 0,
+		Length: 6,
+		Protocol: nsh.NSHProtocolIPv4,
+		MDType: nsh.MDTypeOne,
+
+		ServicePathIdentifier: 888,
+		ServiceIndex: 7,
+		Context: [4]nsh.NSHContextHeader{1,2,3,4},
+	}
+
+	ipExpectUDP := *(pkt.NetworkLayer().(*layers.IPv4))
+	ipExpectUDP.Protocol = layers.IPProtocolUDP
+
+	outerUDP := layers.UDP{
+		SrcPort: 777,
+		DstPort: 4790,
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums:true},
+		transport,
+		application)
+
+	fullOpts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	ipModifiedDest.SerializeTo(buf, fullOpts)
+	nshLayer.SerializeTo(buf, fullOpts)
+	vxlan.SerializeTo(buf, fullOpts)
+	outerUDP.SerializeTo(buf, fullOpts)
+	ipExpectUDP.SerializeTo(buf, fullOpts)
+	link.SerializeTo(buf, fullOpts)
 
 	return gopacket.NewPacket(buf.Bytes(),
 		layers.LayerTypeEthernet, gopacket.Default), nil
